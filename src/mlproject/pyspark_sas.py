@@ -2,26 +2,18 @@
 
 from __future__ import annotations
 
-import json
+import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.types import (
-    BooleanType,
-    DateType,
-    DoubleType,
-    IntegerType,
-    LongType,
-    StringType,
-    StructField,
-    StructType,
-    TimestampType,
-)
+from pyspark.sql.types import *
 
 
+_SAS_READER_FORMAT = "com.github.saurfang.sas.spark"
+_DECIMAL_PATTERN = re.compile(r"^decimal\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)$")
 _TYPE_MAP = {
     "string": StringType,
     "str": StringType,
@@ -38,7 +30,28 @@ _TYPE_MAP = {
 }
 
 
-def _load_metadata(meta_path: str | Path | None) -> dict[str, Any]:
+def _resolve_spark_type(type_name: str):
+    normalized = str(type_name).strip().lower()
+    decimal_match = _DECIMAL_PATTERN.fullmatch(normalized)
+    if decimal_match is not None:
+        precision = int(decimal_match.group(1))
+        scale = int(decimal_match.group(2))
+        if scale > precision:
+            raise ValueError(
+                f"Invalid decimal type '{type_name}': scale cannot exceed precision."
+            )
+        return DecimalType(precision=precision, scale=scale)
+
+    dtype_factory = _TYPE_MAP.get(normalized)
+    if dtype_factory is None:
+        raise ValueError(f"Unsupported Spark type in metadata: {type_name}")
+
+    return dtype_factory()
+
+
+def _load_metadata(
+    spark: SparkSession, meta_path: str | Path | None
+) -> dict[str, Any]:
     if meta_path is None:
         return {}
 
@@ -46,24 +59,96 @@ def _load_metadata(meta_path: str | Path | None) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Metadata file not found: {path}")
 
-    suffix = path.suffix.lower()
-    if suffix == ".json":
-        return json.loads(path.read_text(encoding="utf-8"))
-
-    if suffix in {".yaml", ".yml"}:
-        try:
-            import yaml
-        except ImportError as exc:
-            raise ImportError(
-                "Reading YAML metadata requires PyYAML to be installed."
-            ) from exc
-
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        return data or {}
-
-    raise ValueError(
-        "Unsupported metadata format. Use a .json, .yaml, or .yml file."
+    metadata_df = (
+        spark.read.options(header="true", delimiter=";", mode="FAILFAST")
+        .csv(str(path))
     )
+    if not metadata_df.columns:
+        return {}
+
+    field_lookup = {
+        "".join(char for char in field.lower() if char.isalnum()): field
+        for field in metadata_df.columns
+        if field
+    }
+    name_field = next(
+        (
+            field_lookup[key]
+            for key in ("columnname", "columname", "name", "column", "colname")
+            if key in field_lookup
+        ),
+        None,
+    )
+    type_field = next(
+        (
+            field_lookup[key]
+            for key in ("datatype", "type", "sparktype")
+            if key in field_lookup
+        ),
+        None,
+    )
+    nullable_field = next(
+        (
+            field_lookup[key]
+            for key in ("nullable", "isnullable")
+            if key in field_lookup
+        ),
+        None,
+    )
+
+    if name_field is None or type_field is None:
+        raise ValueError(
+            "Metadata file must include ';'-separated 'columnname' and "
+            "'datatype' headers."
+        )
+
+    schema: list[dict[str, Any]] = []
+    for index, row in enumerate(metadata_df.collect(), start=2):
+        row_data = row.asDict(recursive=True)
+        name = str(row_data.get(name_field) or "").strip()
+        dtype_name = str(row_data.get(type_field) or "").strip().lower() or "string"
+
+        if not name and not dtype_name:
+            continue
+        if not name:
+            raise ValueError(f"Metadata row {index} is missing a column name: {row_data}")
+
+        nullable = True
+        if nullable_field is not None:
+            raw_nullable = str(row_data.get(nullable_field) or "").strip().lower()
+            if raw_nullable:
+                if raw_nullable in {"true", "1", "yes", "y"}:
+                    nullable = True
+                elif raw_nullable in {"false", "0", "no", "n"}:
+                    nullable = False
+                else:
+                    raise ValueError(
+                        "Nullable values must be true/false, yes/no, or 1/0. "
+                        f"Found '{raw_nullable}' on row {index}."
+                    )
+
+        schema.append(
+            {
+                "name": name,
+                "type": dtype_name,
+                "nullable": nullable,
+            }
+        )
+
+    return {"schema": schema}
+
+
+def _normalize_sas_paths(
+    sas_path: str | Path | Sequence[str | Path],
+) -> list[str]:
+    if isinstance(sas_path, (str, Path)):
+        return [str(Path(sas_path))]
+
+    normalized_paths = [str(Path(path)) for path in sas_path]
+    if not normalized_paths:
+        raise ValueError("At least one SAS path must be provided.")
+
+    return normalized_paths
 
 
 def _build_schema(schema_config: list[dict[str, Any]] | None) -> StructType | None:
@@ -75,12 +160,7 @@ def _build_schema(schema_config: list[dict[str, Any]] | None) -> StructType | No
         name = column["name"]
         dtype_name = str(column.get("type", "string")).lower()
         nullable = bool(column.get("nullable", True))
-
-        dtype_factory = _TYPE_MAP.get(dtype_name)
-        if dtype_factory is None:
-            raise ValueError(f"Unsupported Spark type in metadata: {dtype_name}")
-
-        fields.append(StructField(name, dtype_factory(), nullable))
+        fields.append(StructField(name, _resolve_spark_type(dtype_name), nullable))
 
     return StructType(fields)
 
@@ -105,12 +185,13 @@ def _apply_metadata_transforms(df: DataFrame, metadata: dict[str, Any]) -> DataF
         elif normalized == "timestamp":
             df = df.withColumn(column_name, F.to_timestamp(F.col(column_name)))
         else:
-            dtype_factory = _TYPE_MAP.get(normalized)
-            if dtype_factory is None:
+            try:
+                spark_type = _resolve_spark_type(normalized)
+            except ValueError as exc:
                 raise ValueError(
                     f"Unsupported cast type in metadata for {column_name}: {type_name}"
-                )
-            df = df.withColumn(column_name, F.col(column_name).cast(dtype_factory()))
+                ) from exc
+            df = df.withColumn(column_name, F.col(column_name).cast(spark_type))
 
     for column_name in date_columns:
         if column_name in df.columns:
@@ -125,35 +206,52 @@ def _apply_metadata_transforms(df: DataFrame, metadata: dict[str, Any]) -> DataF
 
 def read_sas_with_metadata(
     spark: SparkSession,
-    sas_path: str | Path,
+    sas_path: str | Path | Sequence[str | Path],
     meta_path: str | Path | None = None,
     **read_options: Any,
 ) -> DataFrame:
     """
     Read a SAS dataset into a PySpark DataFrame.
 
-    If a metadata file is provided, its options are applied automatically.
-    Supported metadata keys:
-      - read_options: pandas.read_sas keyword arguments
-      - schema: list of {"name": ..., "type": ..., "nullable": ...}
-      - rename_columns: {"old_name": "new_name"}
-      - casts: {"column_name": "string|int|double|date|timestamp|..."}
-      - date_columns: ["col_a", ...]
-      - timestamp_columns: ["col_b", ...]
-
-    Keyword arguments passed directly to this function override metadata
-    read_options entries.
+    If a metadata file is provided, it is read as a ';'-separated schema file
+    with headers like 's.no;columnname;datatype' and an optional 'nullable'
+    column. The SAS file is read with ``spark.read`` using the same Spark SAS
+    data source format used in the Scala implementation.
     """
 
-    metadata = _load_metadata(meta_path)
-    pandas_read_options = dict(metadata.get("read_options", {}))
-    pandas_read_options.update(read_options)
-
+    metadata = _load_metadata(spark, meta_path)
     schema = _build_schema(metadata.get("schema"))
-    pandas_df = pd.read_sas(Path(sas_path), **pandas_read_options)
+    reader_options = {"encoding": "UTF-8", "mode": "FAILFAST"}
+    reader_options.update({key: str(value) for key, value in read_options.items()})
 
-    if "column_names" in metadata:
-        pandas_df.columns = metadata["column_names"]
+    dataframes: list[DataFrame] = []
+    first_columns: list[str] | None = None
+    for path in _normalize_sas_paths(sas_path):
+        reader = spark.read.format(_SAS_READER_FORMAT).options(**reader_options)
+        if schema is not None:
+            reader = reader.schema(schema)
 
-    spark_df = spark.createDataFrame(pandas_df, schema=schema)
-    return _apply_metadata_transforms(spark_df, metadata)
+        dataframe = (
+            reader.load(path)
+            .withColumn(
+                "source_file_name",
+                F.substring_index(F.input_file_name(), "/", -1),
+            )
+            .withColumn("source_file_name_with_path", F.input_file_name())
+        )
+
+        if first_columns is None:
+            first_columns = dataframe.columns
+        else:
+            dataframe = dataframe.select(*first_columns)
+
+        dataframes.append(dataframe)
+
+    if not dataframes:
+        raise ValueError("No SAS files were loaded.")
+
+    combined_df = dataframes[0]
+    for dataframe in dataframes[1:]:
+        combined_df = combined_df.unionByName(dataframe)
+
+    return _apply_metadata_transforms(combined_df, metadata)
