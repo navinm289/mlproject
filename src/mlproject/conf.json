@@ -1,0 +1,36 @@
+{
+  "uat": [
+    {
+      "file": "/nas/test/abc.sas",
+      "metadata": "/nas/test/abc.metadata",
+      "basefile": true
+    },
+    {
+      "file": "/nas/test/ebf.sas",
+      "metadata": "/nas/test/ebf.metadata",
+      "join": {
+        "type": "inner",
+        "keys": ["acct_id"]
+      }
+    },
+    {
+      "file": "/nas/test/kb*.sas",
+      "metadata": "/nas/test/kd.metadata",
+      "union": true,
+      "join": {
+        "type": "inner",
+        "keys": ["acct_id"]
+      }
+    },
+    {
+      "file": "/nas/test/ki*.sas",
+      "metadata": "/nas/test/ki.metadata",
+      "union": true,
+      "join": {
+        "choose name": "union", # idea here is to uion all files first
+        "type": "inner",
+        "keys": ["acct_id"]
+      }
+    }
+  ]
+}

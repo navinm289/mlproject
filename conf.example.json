@@ -1,0 +1,70 @@
+{
+  "uat": [
+    {
+      "file": "/nas/test/abc.sas",
+      "metadata": "/nas/test/abc.metadata",
+      "basefile": true,
+      "_comment": "BASE FILE: This is the foundation of the data stack"
+    },
+    {
+      "file": "/nas/test/ebf.sas",
+      "metadata": "/nas/test/ebf.metadata",
+      "join": {
+        "type": "inner",
+        "keys": ["acct_id"]
+      },
+      "_comment": "JOIN: Join ebf with previous data (abc) on acct_id using inner join"
+    },
+    {
+      "file": "/nas/test/kb*.sas",
+      "metadata": "/nas/test/kd.metadata",
+      "union": true,
+      "join": {
+        "type": "inner",
+        "keys": ["acct_id"]
+      },
+      "_comment": "GLOB + UNION + JOIN: Find all kb*.sas files, union them together, then join with previous data"
+    },
+    {
+      "file": "/nas/test/ki*.sas",
+      "metadata": "/nas/test/ki.metadata",
+      "union": true,
+      "join": {
+        "choose name": "union",
+        "type": "inner",
+        "keys": ["acct_id"]
+      },
+      "_comment": "UNION BEFORE JOIN: Union all ki*.sas files first, then join with previous data on acct_id"
+    }
+  ],
+  "prod": [
+    {
+      "file": "/prod/data/main.sas",
+      "metadata": "/prod/data/main.metadata",
+      "basefile": true
+    },
+    {
+      "file": "/prod/data/supplement.sas",
+      "metadata": "/prod/data/supplement.metadata",
+      "join": {
+        "type": "left",
+        "keys": ["customer_id"]
+      }
+    }
+  ],
+  "dev": [
+    {
+      "file": "/dev/sample/base_*.sas",
+      "basefile": true,
+      "union": true,
+      "_comment": "BASE with glob pattern - all matching files are unioned to form base"
+    },
+    {
+      "file": "/dev/sample/ext.sas",
+      "join": {
+        "type": "inner",
+        "keys": ["id"]
+      }
+    }
+  ]
+}

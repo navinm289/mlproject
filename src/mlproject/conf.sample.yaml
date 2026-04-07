@@ -1,0 +1,32 @@
+# Recommended sample format for SAS + metadata + join pipelines.
+# YAML is easier than INI when you have repeated sources, join settings,
+# booleans, and future nested options.
+
+version: 1
+
+pipeline:
+  name: sample_sas_pipeline
+  description: Sample config for base file, joins, and wildcard union input
+
+sources:
+  - id: abc
+    file: /nas/test/abc.sas
+    metadata: /nas/test/abc.metadata
+    basefile: true
+
+  - id: ebf
+    file: /nas/test/ebf.sas
+    metadata: /nas/test/ebf.metadata
+    join:
+      type: inner
+      keys:
+        - acct_id
+
+  - id: kb
+    file: /nas/test/kb*.sas
+    metadata: /nas/test/kd.metadata
+    union: true
+    join:
+      type: inner
+      keys:
+        - acct_id
