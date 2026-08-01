@@ -1,0 +1,41 @@
+/* Autosys job definition — trigger Databricks job via REST API (async).
+ *
+ * Deploy:
+ *   1. Copy scripts/trigger_databricks_job.sh to /opt/autosys/scripts/
+ *   2. Set DATABRICKS_TOKEN via Autosys encrypted global variable or secret file
+ *   3. Load: jil < autosys/trigger_databricks_etl.jil
+ *
+ * Replace placeholders:
+ *   - autosys-agent-01       → your Autosys agent machine name
+ *   - <workspace-id>         → Databricks workspace ID
+ *   - 123456789012345        → target Databricks job ID
+ */
+
+insert_job: trigger_databricks_etl   job_type: c
+
+command: /opt/autosys/scripts/trigger_databricks_job.sh
+machine: autosys-agent-01
+owner: autosys_svc
+permission: gx,ge
+
+date_conditions: 1
+days_of_week: all
+start_times: "02:00"
+run_window: "02:00-03:00"
+
+std_out_file: "/var/autosys/log/trigger_databricks_etl.$AUTO_JOB_NAME.out"
+std_err_file: "/var/autosys/log/trigger_databricks_etl.$AUTO_JOB_NAME.err"
+
+/* Option A: environment variables (token from secure store — see docs/deployment.md) */
+envvars:
+  DATABRICKS_HOST="https://WORKSPACE_ID.cloud.databricks.com",
+  DATABRICKS_JOB_ID="123456789012345",
+  DATABRICKS_TOKEN="$(SECURE_VAR:databricks_token)"
+
+/* Option B: source token from restricted file instead of env var
+   Add to wrapper script or use:
+   envvars:
+     DATABRICKS_HOST="https://WORKSPACE_ID.cloud.databricks.com",
+     DATABRICKS_JOB_ID="123456789012345"
+   And set DATABRICKS_TOKEN in /etc/autosys/databricks.env (chmod 600)
+*/
