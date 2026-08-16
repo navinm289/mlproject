@@ -1,0 +1,22 @@
+# Template Spark defaults for Iceberg + HMS (HiveCatalog) on EKS
+# Env vars (set in JupyterHub values.yaml) override placeholders at runtime
+# via /opt/scratchbook/start-spark-session.py
+
+spark.sql.extensions                                  org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
+spark.sql.catalog.lake                                org.apache.iceberg.spark.SparkCatalog
+spark.sql.catalog.lake.type                           hive
+spark.sql.catalog.lake.uri                            thrift://hive-metastore.metastore.svc.cluster.local:9083
+spark.sql.catalog.lake.warehouse                      s3://REPLACE_LAKE_BUCKET/warehouse/
+spark.sql.catalog.lake.io-impl                        org.apache.iceberg.aws.s3.S3FileIO
+spark.sql.defaultCatalog                              lake
+
+spark.hadoop.fs.s3a.impl                              org.apache.hadoop.fs.s3a.S3AFileSystem
+spark.hadoop.fs.s3a.aws.credentials.provider          com.amazonaws.auth.WebIdentityTokenCredentialsProvider
+spark.hadoop.fs.s3.impl                               org.apache.hadoop.fs.s3a.S3AFileSystem
+
+spark.hadoop.hive.metastore.uris                      thrift://hive-metastore.metastore.svc.cluster.local:9083
+
+# Keep scratch profiles read-mostly on prod; avoid aggressive cache across users
+spark.sql.iceberg.planning.preserve-data-grouping     true
+spark.driver.memory                                   2g
+spark.executor.memory                                 2g

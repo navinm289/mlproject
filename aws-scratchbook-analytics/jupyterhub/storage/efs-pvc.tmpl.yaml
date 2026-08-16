@@ -1,0 +1,64 @@
+# Per-team EFS PVCs (rendered by install.sh via envsubst, then kubectl apply).
+# One home volume (per-user subPaths) and one shared volume (team collab space).
+# EFS access points/paths are scoped per team so a team cannot mount another
+# team's data: volumeHandle points at /jupyterhub/<team>/...
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: jhub-${TEAM}-home-pv
+spec:
+  capacity:
+    storage: 100Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: efs-sc
+  csi:
+    driver: efs.csi.aws.com
+    volumeHandle: "${EFS_FILE_SYSTEM_ID}:/jupyterhub/${TEAM}/homes"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jhub-home
+  namespace: ${NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs-sc
+  resources:
+    requests:
+      storage: 100Gi
+  volumeName: jhub-${TEAM}-home-pv
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: jhub-${TEAM}-shared-pv
+spec:
+  capacity:
+    storage: 50Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: efs-sc
+  csi:
+    driver: efs.csi.aws.com
+    volumeHandle: "${EFS_FILE_SYSTEM_ID}:/jupyterhub/${TEAM}"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jhub-shared
+  namespace: ${NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs-sc
+  resources:
+    requests:
+      storage: 50Gi
+  volumeName: jhub-${TEAM}-shared-pv

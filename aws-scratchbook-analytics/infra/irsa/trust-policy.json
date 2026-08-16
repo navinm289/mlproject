@@ -1,0 +1,26 @@
+# IAM role for JupyterHub single-user pods (IRSA)
+# Bind to ServiceAccount jupyterhub/jupyterhub-singleuser
+#
+# Prerequisites: EKS OIDC provider enabled.
+# Replace REPLACE_* then:
+#   aws iam create-role ...
+#   aws iam put-role-policy ...
+
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::REPLACE_ACCOUNT_ID:oidc-provider/oidc.eks.REPLACE_REGION.amazonaws.com/id/REPLACE_OIDC_ID"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "oidc.eks.REPLACE_REGION.amazonaws.com/id/REPLACE_OIDC_ID:sub": "system:serviceaccount:jupyterhub:jupyterhub-singleuser",
+          "oidc.eks.REPLACE_REGION.amazonaws.com/id/REPLACE_OIDC_ID:aud": "sts.amazonaws.com"
+        }
+      }
+    }
+  ]
+}

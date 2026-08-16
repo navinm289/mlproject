@@ -1,0 +1,40 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListLakeBucketScoped",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+      "Resource": "arn:aws:s3:::${LAKE_BUCKET}",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "warehouse/*",
+            "curated/${TEAM}/*",
+            "scratch/${TEAM}/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ReadCuratedAndWarehouse",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject"],
+      "Resource": [
+        "arn:aws:s3:::${LAKE_BUCKET}/warehouse/*",
+        "arn:aws:s3:::${LAKE_BUCKET}/curated/${TEAM}/*"
+      ]
+    },
+    {
+      "Sid": "WriteTeamScratchOnly",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload"
+      ],
+      "Resource": "arn:aws:s3:::${LAKE_BUCKET}/scratch/${TEAM}/*"
+    }
+  ]
+}
