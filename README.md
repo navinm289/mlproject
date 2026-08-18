@@ -51,6 +51,17 @@ Example:
 }
 ```
 
+## Snowflake ingest cost
+
+Compare `COPY INTO` from S3 with the Snowflake Spark connector:
+
+```bash
+python -m mlproject compare-ingest-cost --data-gb 100 --warehouse SMALL --spark-dpu 10
+```
+
+See [docs/snowflake_ingest_cost_comparison.md](docs/snowflake_ingest_cost_comparison.md)
+for the cost model, worked examples, and when to keep the Spark connector.
+
 ## Notes
 
 - The implementation uses `pandas.read_sas(...)` first, then converts the
