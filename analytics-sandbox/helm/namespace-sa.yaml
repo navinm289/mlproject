@@ -1,0 +1,21 @@
+# Namespace + single-user ServiceAccount (rendered by install.sh via envsubst).
+# IRSA annotation is present but points to a role you only NEED once notebooks
+# access S3 (Phase 2). For the base phase the role can be a no-op / omitted.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: analytics-sandbox
+  labels:
+    kubernetes.io/metadata.name: analytics-sandbox
+    app.kubernetes.io/part-of: analytics-sandbox
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: singleuser
+  namespace: analytics-sandbox
+  annotations:
+    # Phase 2: create this role and scope S3 access. Harmless if the role
+    # does not exist yet in the base phase (no AWS calls are made).
+    eks.amazonaws.com/role-arn: "arn:aws:iam::${ACCOUNT_ID}:role/analytics-sandbox-singleuser"

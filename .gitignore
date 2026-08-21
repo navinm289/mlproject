@@ -1,3 +1,4 @@
 config/.env
+analytics-sandbox/config.env
 *.log
 .DS_Store

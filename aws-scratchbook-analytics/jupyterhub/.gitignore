@@ -1,5 +1,0 @@
-# Per-env secrets/config (copy from *.env.example)
-config/*.env
-
-# install.sh DRY_RUN output
-rendered-*/

@@ -1,9 +1,0 @@
-# Copy to dev.tfvars and fill in for the DEV cluster/account.
-#   terraform apply -var-file=dev.tfvars
-
-region                = "us-east-1"
-environment           = "dev"
-lake_bucket           = "dev-analytics-lake"
-eks_oidc_provider_arn = "arn:aws:iam::REPLACE_DEV_ACCOUNT_ID:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/REPLACE_DEV_OIDC_ID"
-eks_oidc_provider_url = "oidc.eks.us-east-1.amazonaws.com/id/REPLACE_DEV_OIDC_ID"
-teams                 = ["retail-cards", "brands"]

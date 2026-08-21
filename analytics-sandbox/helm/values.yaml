@@ -1,0 +1,90 @@
+# Zero-to-JupyterHub minimal base values (rendered by install.sh via envsubst).
+# Phase 1: multi-user OIDC login + per-user EFS home + plain base notebook.
+# No Spark, no S3, no HMS yet (see README for Phase 2/3).
+
+fullnameOverride: jupyterhub
+
+hub:
+  config:
+    JupyterHub:
+      admin_access: true
+      authenticator_class: generic-oauth
+    GenericOAuthenticator:
+      client_id: "${OIDC_CLIENT_ID}"
+      client_secret: "${OIDC_CLIENT_SECRET}"
+      oauth_callback_url: "https://${HOST}/hub/oauth_callback"
+      authorize_url: "https://${OIDC_ISSUER}/oauth2/authorize"
+      token_url: "https://${OIDC_ISSUER}/oauth2/token"
+      userdata_url: "https://${OIDC_ISSUER}/oauth2/userInfo"
+      username_claim: email
+      scope:
+        - openid
+        - email
+        - profile
+    KubeSpawner:
+      start_timeout: 600
+      http_timeout: 120
+  service:
+    type: ClusterIP
+
+proxy:
+  service:
+    type: ClusterIP
+  chp:
+    networkPolicy:
+      enabled: true
+
+singleuser:
+  defaultUrl: /lab
+  serviceAccountName: singleuser
+  image:
+    name: "${SINGLEUSER_IMAGE}"
+    tag: "${SINGLEUSER_IMAGE_TAG}"
+    pullPolicy: IfNotPresent
+  memory:
+    guarantee: 1G
+    limit: 2G
+  cpu:
+    guarantee: 0.25
+    limit: 1
+  storage:
+    type: static
+    static:
+      pvcName: sandbox-home
+      subPath: "homes/{username}"
+  networkPolicy:
+    enabled: true
+    egressAllowRules:
+      privateIPs: true
+      nonPrivateIPs: true
+
+cull:
+  enabled: true
+  timeout: 3600
+  every: 300
+  users: false
+  maxAge: 0
+
+scheduling:
+  userScheduler:
+    enabled: true
+
+prePuller:
+  hook:
+    enabled: true
+  continuous:
+    enabled: false
+
+ingress:
+  enabled: true
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: "${ACM_CERT_ARN}"
+  hosts:
+    - "${HOST}"
+  tls:
+    - hosts:
+        - "${HOST}"

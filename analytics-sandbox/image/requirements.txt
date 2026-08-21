@@ -1,0 +1,9 @@
+# Phase 1: intentionally empty. The base image ships JupyterLab + Python.
+#
+# Phase 2: add libraries here, then uncomment the pip install in the Dockerfile,
+# rebuild, push to ECR, and bump the tag in helm/values.yaml. Suggested starters:
+#   pandas
+#   pyarrow
+#   matplotlib
+#   boto3
+#   s3fs
