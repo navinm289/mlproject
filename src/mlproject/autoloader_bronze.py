@@ -155,9 +155,12 @@ def build_validation_results(spark: SparkSession, config: IngestionConfig) -> Da
     algorithm_ok = F.upper(F.regexp_replace("checksum_algorithm", "-", "")) == F.lit("SHA256")
     count_ok = F.col("record_count") == F.col("_actual_record_count")
     checksum_ok = F.lower("checksum") == F.lower("_actual_checksum")
+    # S3 exposes last-modified time, not a general creation-time attribute.
+    # A producer creation timestamp may be earlier than upload, but it must not
+    # be later than the observed S3 timestamp beyond the configured tolerance.
     timestamp_ok = (
-        F.abs(F.col("file_creation_time").cast("long") - F.col("_actual_file_time").cast("long"))
-        <= tolerance
+        F.col("file_creation_time").cast("long")
+        <= F.col("_actual_file_time").cast("long") + tolerance
     )
 
     return (
