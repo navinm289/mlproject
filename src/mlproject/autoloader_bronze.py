@@ -12,10 +12,9 @@ columns on those same Bronze rows; this application creates no Silver table.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 
 from pyspark.sql import DataFrame, SparkSession, functions as F, types as T
-
-from mlproject.autoloader_contract import IngestionConfig
 
 
 CONTROL_SCHEMA = T.StructType(
@@ -29,13 +28,35 @@ CONTROL_SCHEMA = T.StructType(
 )
 
 
+@dataclass(frozen=True)
+class IngestionConfig:
+    landing_path: str
+    checkpoint_path: str
+    schema_path: str
+    bronze_table: str
+    csv_glob: str = "*.csv"
+    control_glob: str = "*.control.json"
+    header: bool = True
+    delimiter: str = ","
+    managed_file_events: bool = True
+    creation_time_tolerance_seconds: int = 300
+
+    def validate(self) -> None:
+        if not self.landing_path.startswith(("s3://", "/Volumes/")):
+            raise ValueError("landing_path must be an s3:// path or UC Volume path")
+        if self.checkpoint_path.rstrip("/") == self.landing_path.rstrip("/"):
+            raise ValueError("checkpoint_path must be outside the landing directory")
+        if self.bronze_table.count(".") != 2:
+            raise ValueError("bronze_table must be catalog.schema.table")
+
+
 def read_csv_stream(spark: SparkSession, config: IngestionConfig) -> DataFrame:
     reader = (
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "csv")
         .option("cloudFiles.schemaLocation", config.schema_path)
         .option("cloudFiles.inferColumnTypes", "true")
-        .option("cloudFiles.schemaEvolutionMode", "addNewColumns")
+        .option("cloudFiles.schemaEvolutionMode", "rescue")
         .option("pathGlobFilter", config.csv_glob)
         .option("header", str(config.header).lower())
         .option("delimiter", config.delimiter)
@@ -63,10 +84,26 @@ def add_bronze_metadata(df: DataFrame) -> DataFrame:
 
 
 def ingest_available_csv_files(spark: SparkSession, config: IngestionConfig) -> None:
+    bronze_df = add_bronze_metadata(read_csv_stream(spark, config))
+
+    # toTable() would create a Delta table by default. Create the empty managed
+    # Iceberg table explicitly on the first run, then use it as the stream sink.
+    if not spark.catalog.tableExists(config.bronze_table):
+        bronze_df.limit(0).write.format("iceberg").saveAsTable(config.bronze_table)
+
+    provider = (
+        spark.sql(f"DESCRIBE DETAIL {config.bronze_table}")
+        .select(F.lower("format").alias("format"))
+        .first()["format"]
+    )
+    if provider != "iceberg":
+        raise ValueError(
+            f"{config.bronze_table} already exists with format {provider!r}; Iceberg is required"
+        )
+
     query = (
-        add_bronze_metadata(read_csv_stream(spark, config))
+        bronze_df
         .writeStream.option("checkpointLocation", config.checkpoint_path)
-        .option("mergeSchema", "true")
         .trigger(availableNow=True)
         .toTable(config.bronze_table)
     )
