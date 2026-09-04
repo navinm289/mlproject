@@ -1,0 +1,20 @@
+bundle:
+  name: autoloader-bronze-poc
+
+include:
+  - resources/*.yml
+
+variables:
+  landing_path:
+    description: S3 external-location or UC Volume path containing CSV and control files
+  checkpoint_path:
+    description: Durable checkpoint path outside the landing directory
+  schema_path:
+    description: Durable Auto Loader schema path
+  bronze_table:
+    description: Unity Catalog target in catalog.schema.table form
+
+targets:
+  dev:
+    mode: development
+    default: true
