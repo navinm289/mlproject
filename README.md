@@ -1,6 +1,23 @@
 # mlproject
 
-This project now includes a small PySpark helper for reading SAS files.
+This project includes a small PySpark helper for reading SAS files, plus an
+**AWS certification progress agent** for tracking study activity and readiness.
+
+## AWS certification progress agent
+
+```bash
+pip install -e ".[dev]"
+aws-cert init --exam SAA-C03
+aws-cert log study --domain secure --minutes 60 --notes "IAM deep dive"
+aws-cert status
+aws-cert plan
+```
+
+See [`aws-cert/README.md`](aws-cert/README.md) for domain ids, Cursor agent
+instructions, and the weekly check-in workflow. Progress lives in
+`aws-cert/progress.json`; the dashboard is `aws-cert/STATUS.md`.
+
+## PySpark SAS helper
 
 ## Install
 
