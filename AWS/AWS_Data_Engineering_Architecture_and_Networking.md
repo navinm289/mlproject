@@ -1,5 +1,5 @@
 # AWS Data Engineering Architecture and Private Networking
-_Last updated: 2026-10-19 (America/Chicago)_
+_Last updated: 2026-10-26 (America/Chicago)_
 
 > **Living learning notes.** This guide connects AWS accounts, IAM, S3, EKS, VPCs, PrivateLink, allowlists, EFS, Amazon MWAA (managed Airflow), Lambda, and event-driven processing. Extend existing sections or append new ones as more topics are covered. Examples are illustrative; use an isolated sandbox.
 
@@ -390,3 +390,74 @@ An S3 gateway endpoint has no added gateway usage charge. EKS control planes, EC
 - [EKS user guide](https://docs.aws.amazon.com/eks/latest/userguide/what-is-eks.html)
 - [Amazon EFS user guide](https://docs.aws.amazon.com/efs/latest/ug/whatisefs.html)
 - [EventBridge S3 events](https://docs.aws.amazon.com/AmazonS3/latest/userguide/ev-events.html)
+
+## 14. S3 → SQS → Databricks file-arrival triggers (2026-10-26)
+
+### Why this is a separate architecture
+
+In the earlier **S3 → EventBridge → Lambda → MWAA → EKS** design, Lambda explicitly starts an Airflow DAG. For a Databricks Workflows job, there is a different supported design when **SNS is unavailable** and the team wants to use **SQS directly**. Do not confuse an SQS queue with a compute scheduler: SQS stores notifications; Databricks' file-arrival trigger decides when to start the job.
+
+\`\`\`mermaid
+flowchart LR
+    Producer["Source system"] -->|"PutObject"| S3[("S3 landing bucket")]
+    S3 -->|"s3:ObjectCreated:* notification"| SQS[("SQS Standard queue")]
+    SQS -->|"Provided file events"| UC["Unity Catalog external location"]
+    UC -->|"File arrival signal"| Trigger["Databricks Workflows file arrival trigger"]
+    Trigger --> Job["Databricks job: Python/PySpark standardization"]
+    Job -->|"Read files"| S3
+    Job -->|"Write results"| Out[("S3 output / Iceberg target")]
+\`\`\`
+
+The S3-to-SQS event path and the job's later S3 data reads are **different connections**. An event message contains object metadata, not the CSV/Parquet file contents.
+
+### AWS-side setup
+
+1. Create an **SQS Standard queue** in a supported region. S3 event notifications cannot directly target SQS FIFO queues. Configure encryption and KMS permissions as appropriate.
+2. Add an **SQS resource policy** allowing \`s3.amazonaws.com\` to call \`sqs:SendMessage\`, constrained to the exact source bucket ARN (\`aws:SourceArn\`) and account (\`aws:SourceAccount\`). If the queue uses a customer-managed KMS key, ensure the producer has the necessary KMS permissions.
+3. Configure **S3 Event notifications** on the landing bucket for \`s3:ObjectCreated:*\`, pointing directly to the queue. Use a suitable prefix (e.g. \`incoming/\`) and suffix (e.g. \`.csv\`) filter to avoid unwanted triggers.
+4. Ensure the IAM role used by the Databricks storage credential has the **documented SQS permissions** to inspect the queue and consume/delete messages, as well as the appropriate S3 access. Check the current Databricks requirements rather than blindly copying a permissive policy.
+5. Verify the bucket, queue and Databricks workspace/Unity Catalog configuration meet regional and organizational requirements.
+
+### Databricks-side setup
+
+1. Configure a **Unity Catalog storage credential** and **external location** covering the S3 landing path.
+2. For that external location, select **Provided file events** and configure the **SQS queue URL** according to the workspace's file-event settings. The queue is configured at the external-location/file-events layer, not as an arbitrary SQS setting on each job.
+3. Create a **Databricks Workflows job** that runs the Python/PySpark standardization framework.
+4. Enable the job's **File arrival** trigger for the supported S3 location/volume path, and test an upload.
+5. Confirm the event reaches SQS, the Databricks trigger observes it, the job starts, and the framework processes the expected object(s). Validate the exact UI, permissions and supported features against the current workspace version.
+
+**SNS and Lambda are not required for this direct S3 → SQS → Databricks design.** Also, lack of AWS PrivateLink does not inherently prevent this pattern: PrivateLink is a separate network-connectivity control. The configured AWS/Databricks network path, endpoint restrictions, IAM, SQS queue policy and KMS access must still work.
+
+### Operational rules and failure cases
+
+| Question / failure | What to check |
+| --- | --- |
+| S3 object exists but no SQS message | S3 notification enabled, event type, prefix/suffix filter, SQS queue policy, region, encryption |
+| Message arrives but Databricks doesn't trigger | External location's Provided file events, queue URL, Databricks permissions, file-arrival trigger status, supported path |
+| Job starts but can't read the object | S3 authorization, Unity Catalog privileges, bucket policy, VPC endpoint restrictions, KMS |
+| Same object processed twice | S3 notifications are at-least-once; use an idempotency key or durable processed-file audit |
+| Messages arrive out of order | Do not assume ordered delivery from S3 events or SQS Standard |
+| Several files arrive together | A file-arrival trigger is not guaranteed to produce exactly one job run per object; discover and deduplicate inputs inside the job |
+| A separate consumer drains the queue | SQS consumers can compete for and delete messages; avoid sharing one event queue between unrelated consumers |
+
+### Comparing the two triggering patterns
+
+| Design | Who launches the workload? | When it fits |
+| --- | --- | --- |
+| S3 → EventBridge → Lambda → MWAA → EKS | Lambda triggers Airflow; Airflow starts/monitors EKS | AWS-native Airflow orchestration and Kubernetes processing |
+| S3 → SQS → Databricks Provided file events → File arrival trigger → Job | Databricks Workflows trigger starts the Databricks job | Databricks scheduling when SNS is unavailable and direct SQS is supported |
+| S3 → SQS → custom polling application | The application polls SQS and decides what to run | A custom consumer, not equivalent to a managed Databricks file-arrival trigger |
+
+The second design does **not** require an always-running Auto Loader stream merely to launch a Databricks Workflows file-arrival-triggered job. Auto Loader is a separate ingestion option that can also consume file notifications.
+
+### Practical verification
+
+1. Upload \`incoming/test_001.csv\`; verify that a Databricks job run begins and the file is processed.
+2. Upload a file outside the notification filter; verify it does not create a matching event.
+3. Upload multiple files quickly; verify all are eventually processed once in your **data output**, even if notifications are duplicated.
+4. Retry a failed run and re-upload the same object; ensure the standardization framework's audit/idempotency logic prevents duplicate writes.
+5. Check CloudWatch/SQS metrics, Databricks job history and permissions when a stage fails.
+
+For the focused walkthrough also see [the separately created Databricks/SQS notes](../docs/AWS_LEARNING_NOTES.md).
+
+**References:** [AWS S3 Event Notifications](https://docs.aws.amazon.com/AmazonS3/latest/userguide/EventNotifications.html), [Databricks file arrival triggers](https://docs.databricks.com/aws/en/jobs/file-arrival-triggers), [Databricks file events](https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/file-events).
