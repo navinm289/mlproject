@@ -397,7 +397,7 @@ An S3 gateway endpoint has no added gateway usage charge. EKS control planes, EC
 
 In the earlier **S3 → EventBridge → Lambda → MWAA → EKS** design, Lambda explicitly starts an Airflow DAG. For a Databricks Workflows job, there is a different supported design when **SNS is unavailable** and the team wants to use **SQS directly**. Do not confuse an SQS queue with a compute scheduler: SQS stores notifications; Databricks' file-arrival trigger decides when to start the job.
 
-\`\`\`mermaid
+```mermaid
 flowchart LR
     Producer["Source system"] -->|"PutObject"| S3[("S3 landing bucket")]
     S3 -->|"s3:ObjectCreated:* notification"| SQS[("SQS Standard queue")]
@@ -406,15 +406,15 @@ flowchart LR
     Trigger --> Job["Databricks job: Python/PySpark standardization"]
     Job -->|"Read files"| S3
     Job -->|"Write results"| Out[("S3 output / Iceberg target")]
-\`\`\`
+```
 
 The S3-to-SQS event path and the job's later S3 data reads are **different connections**. An event message contains object metadata, not the CSV/Parquet file contents.
 
 ### AWS-side setup
 
 1. Create an **SQS Standard queue** in a supported region. S3 event notifications cannot directly target SQS FIFO queues. Configure encryption and KMS permissions as appropriate.
-2. Add an **SQS resource policy** allowing \`s3.amazonaws.com\` to call \`sqs:SendMessage\`, constrained to the exact source bucket ARN (\`aws:SourceArn\`) and account (\`aws:SourceAccount\`). If the queue uses a customer-managed KMS key, ensure the producer has the necessary KMS permissions.
-3. Configure **S3 Event notifications** on the landing bucket for \`s3:ObjectCreated:*\`, pointing directly to the queue. Use a suitable prefix (e.g. \`incoming/\`) and suffix (e.g. \`.csv\`) filter to avoid unwanted triggers.
+2. Add an **SQS resource policy** allowing `s3.amazonaws.com` to call `sqs:SendMessage`, constrained to the exact source bucket ARN (`aws:SourceArn`) and account (`aws:SourceAccount`). If the queue uses a customer-managed KMS key, ensure the producer has the necessary KMS permissions.
+3. Configure **S3 Event notifications** on the landing bucket for `s3:ObjectCreated:*`, pointing directly to the queue. Use a suitable prefix (e.g. `incoming/`) and suffix (e.g. `.csv`) filter to avoid unwanted triggers.
 4. Ensure the IAM role used by the Databricks storage credential has the **documented SQS permissions** to inspect the queue and consume/delete messages, as well as the appropriate S3 access. Check the current Databricks requirements rather than blindly copying a permissive policy.
 5. Verify the bucket, queue and Databricks workspace/Unity Catalog configuration meet regional and organizational requirements.
 
@@ -452,7 +452,7 @@ The second design does **not** require an always-running Auto Loader stream mere
 
 ### Practical verification
 
-1. Upload \`incoming/test_001.csv\`; verify that a Databricks job run begins and the file is processed.
+1. Upload `incoming/test_001.csv`; verify that a Databricks job run begins and the file is processed.
 2. Upload a file outside the notification filter; verify it does not create a matching event.
 3. Upload multiple files quickly; verify all are eventually processed once in your **data output**, even if notifications are duplicated.
 4. Retry a failed run and re-upload the same object; ensure the standardization framework's audit/idempotency logic prevents duplicate writes.
