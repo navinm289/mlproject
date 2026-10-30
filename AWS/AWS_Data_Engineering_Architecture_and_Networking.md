@@ -1,5 +1,5 @@
 # AWS Data Engineering Architecture and Private Networking
-_Last updated: 2026-10-26 (America/Chicago)_
+_Last updated: 2026-10-29 (America/Chicago)_
 
 > **Living learning notes.** This guide connects AWS accounts, IAM, S3, EKS, VPCs, PrivateLink, allowlists, EFS, Amazon MWAA (managed Airflow), Lambda, and event-driven processing. Extend existing sections or append new ones as more topics are covered. Examples are illustrative; use an isolated sandbox.
 
@@ -461,3 +461,92 @@ The second design does **not** require an always-running Auto Loader stream mere
 For the focused walkthrough also see [the separately created Databricks/SQS notes](../docs/AWS_LEARNING_NOTES.md).
 
 **References:** [AWS S3 Event Notifications](https://docs.aws.amazon.com/AmazonS3/latest/userguide/EventNotifications.html), [Databricks file arrival triggers](https://docs.databricks.com/aws/en/jobs/file-arrival-triggers), [Databricks file events](https://docs.databricks.com/aws/en/ingestion/cloud-object-storage/file-events).
+
+
+## 15. On-premises VM → corporate proxy → Databricks: firewall and allowlist troubleshooting (2026-10-28)
+
+### The real scenario and the key question
+
+A developer can connect from **VS Code** to a Databricks workspace using an HTTP/HTTPS proxy on **port 9090**, but running the same Python code from an **on-premises VM** results in a **timeout**. A corporate proxy name resembling \`WLN...\` was mentioned; the actual proxy hostname, VM routing and firewall configuration were **not confirmed**. The number \`9090\` by itself is only a **port**, not a reachable proxy address.
+
+The critical distinction is **source VM → proxy** versus **proxy → Databricks**. Even if the corporate proxy's public egress IP is already allowlisted by Databricks, a different VM must still be able to **reach and use** that proxy.
+
+\`\`\`mermaid
+flowchart LR
+    DEV["VS Code workstation"] -->|"HTTP proxy :9090 (working)"| P["Corporate forward proxy"]
+    VM["On-premises VM"] -.->|"TCP :9090 timeout (reported)"| P
+    P -->|"HTTPS CONNECT to :443"| FW["Corporate egress firewall / policy"]
+    FW -->|"Public proxy egress IP"| DB["Databricks workspace HTTPS endpoint"]
+    IP["Destination IP allowlist"] -.->|"Evaluates egress IP"| DB
+\`\`\`
+
+This is a **conceptual proxy architecture**, not proof that either workstation or VM actually uses the same proxy host or egress route. In particular, a \`localhost:9090\` setting in VS Code may be a **local tunnel or port-forward**, not a company-wide proxy listener. \`localhost\` on the VM means **the VM itself**, not the developer laptop.
+
+### Proxy versus firewall versus destination IP allowlist
+
+| Component | Main job | Example failure |
+| --- | --- | --- |
+| Forward proxy | Receives a client request, establishes an outbound connection to an allowed destination and relays traffic | Proxy requires authentication or refuses CONNECT |
+| Firewall | Allows/blocks network flows based on IP, port, state and security policy | VM cannot open TCP to proxy on port 9090 |
+| Destination IP allowlist | Allows inbound requests from approved public source IPs | Databricks rejects requests arriving from an unapproved egress IP |
+| DNS | Resolves the actual proxy hostname and the Databricks hostname where appropriate | VM cannot resolve proxy FQDN |
+| TLS / certificate trust | Validates the HTTPS server and possibly corporate TLS inspection | Certificate verification fails |
+| Databricks token / identity | Authorizes API requests **after** network connectivity works | HTTP 401 or 403 from workspace API |
+
+**Does the VM's IP need to be allowlisted in Databricks?** Usually **no**, *if* the VM really sends the request through the same approved corporate proxy egress path and the destination sees the approved public proxy IP. The VM's own address may still need to be permitted by the **proxy's client ACL**, internal firewall, and corporate network policies. If the VM bypasses the proxy, uses a different proxy egress IP, or connects through a private endpoint, the answer changes.
+
+**Timeout versus HTTP 403:** a TCP timeout usually suggests a network reachability, filtering or proxy listener problem, whereas an HTTP 403 indicates some HTTP-speaking component responded. However, a proxy may itself generate HTTP 403 (forbidden CONNECT) and a timeout can occur at several stages. Use verbose diagnostics to identify **which hop** failed rather than assuming Databricks is the source.
+
+### A repeatable diagnostic sequence (run from the failing VM)
+
+Use the **actual proxy hostname** supplied by the network team, not just \`9090\`. Substitute the workspace's actual hostname and do not paste bearer tokens into shared logs.
+
+\`\`\`bash
+# 1. Check whether the VM has the expected proxy configuration.
+env | grep -iE '^(http_proxy|https_proxy|no_proxy)='
+
+# 2. Confirm the proxy hostname resolves.
+getent hosts proxy.example.corp
+
+# 3. Check basic TCP reachability to the proxy listener.
+nc -vz -w 5 proxy.example.corp 9090
+
+# 4. Force an HTTPS request through that proxy.
+#    A successful CONNECT/TLS handshake, even followed by an
+#    application HTTP 401, is different from a TCP timeout.
+curl -v --connect-timeout 10 --max-time 25 \
+  --proxy http://proxy.example.corp:9090 \
+  https://example.cloud.databricks.com/
+
+# 5. Use explicit environment variables if the Python library
+#    honors standard proxy settings.
+export HTTP_PROXY=http://proxy.example.corp:9090
+export HTTPS_PROXY=http://proxy.example.corp:9090
+\`\`\`
+
+An \`HTTPS_PROXY\` value starting with \`http://\` is normal when the proxy itself speaks HTTP and uses the **CONNECT** method to tunnel TLS to an HTTPS destination. Confirm the specific SDK/library actually honors these variables; some clients require explicit proxy settings. \`NO_PROXY\` can accidentally bypass the proxy for matching hosts.
+
+### Interpret the output before changing any policy
+
+| Observation from failing VM | Likely next investigation |
+| --- | --- |
+| Proxy hostname cannot resolve | Corporate DNS, DNS search suffix, VPN, resolver configuration |
+| TCP connection to proxy:9090 times out | VM outbound firewall, network ACL, routing, proxy inbound ACL or listener |
+| TCP connection is refused | Wrong hostname/port or no service listening |
+| Proxy returns \`407 Proxy Authentication Required\` | Proxy credentials / corporate identity configuration |
+| Proxy returns \`403\` for CONNECT | Proxy destination allowlist, user/source policy or URL category restriction |
+| CONNECT succeeds, then TLS certificate error | CA trust, corporate TLS interception or wrong hostname |
+| TLS works, workspace API returns \`401\` | Databricks bearer token / OAuth authentication |
+| TLS works, workspace API returns \`403\` | Workspace authorization, workspace IP access list or other policy; inspect response origin |
+| Works from VS Code only | Compare proxy **hostname**, local tunnel, DNS, \`NO_PROXY\`, auth, VPN and egress route across environments |
+
+A practical escalation request to the network team should include: **source VM private IP/subnet, actual proxy FQDN and port 9090, target Databricks hostname on TCP 443, test timestamp, whether TCP/CONNECT succeeds, and the precise error**. Do not send secrets, access tokens or internal certificate private keys.
+
+### How this relates back to AWS VPCs and S3 endpoints
+
+- A corporate proxy is **not** an S3 gateway VPC endpoint and is **not** AWS PrivateLink.
+- A proxy may use a public egress path; an S3 gateway endpoint uses a **route-table S3 prefix-list** path; an S3 interface endpoint uses **private endpoint ENI IPs**.
+- The **source IP visible to the destination** depends on which path is actually used. For a public service through a proxy, destination allowlisting commonly evaluates the proxy's public egress IP. For S3 via a VPC endpoint, use relevant endpoint-aware policy conditions such as \`aws:SourceVpce\`.
+- A successful \`curl\` through a proxy proves only the tested network/TLS/API stage. It does not prove an EKS pod has IAM permissions to read S3, or that a Spark runtime can use a Unity Catalog Iceberg REST catalog.
+
+**Takeaway:** first identify the precise source → proxy → destination path. Only then ask for a firewall rule, proxy ACL, public IP allowlist, IAM change, or VPC endpoint. These controls solve different problems.
