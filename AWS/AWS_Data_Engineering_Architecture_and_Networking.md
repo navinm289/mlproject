@@ -550,3 +550,72 @@ A practical escalation request to the network team should include: **source VM p
 - A successful \`curl\` through a proxy proves only the tested network/TLS/API stage. It does not prove an EKS pod has IAM permissions to read S3, or that a Spark runtime can use a Unity Catalog Iceberg REST catalog.
 
 **Takeaway:** first identify the precise source → proxy → destination path. Only then ask for a firewall rule, proxy ACL, public IP allowlist, IAM change, or VPC endpoint. These controls solve different problems.
+
+
+## 16. S3 encryption, KMS, IAM keys, endpoints and security groups (2026-11-05)
+
+This section connects the additional concepts raised in the AWS fundamentals lesson: **S3, KMS, endpoints/PrivateLink, IP allowlisting, security groups, and keys**. Keep the concepts separate: **IAM authorizes API calls; network controls provide/restrict connectivity; KMS controls cryptographic key usage; S3 stores objects.**
+
+### Architecture: encrypted S3 reads from an EKS workload
+
+\`\`\`mermaid
+flowchart LR
+    POD["EKS pod (private subnet)"]
+    ID["EKS Pod Identity / IRSA role"]
+    RT["VPC route table"]
+    EP["S3 gateway endpoint"]
+    S3[("S3 bucket / SSE-KMS object")]
+    KMS["AWS KMS key"]
+    POD -. "Temporary role credentials" .-> ID
+    POD -->|"HTTPS GetObject"| RT
+    RT --> EP --> S3
+    S3 -. "S3 uses KMS for envelope encryption/decryption" .-> KMS
+    ID -. "IAM permission" .-> S3
+    ID -. "KMS authorization when required" .-> KMS
+\`\`\`
+
+**Important:** with S3 server-side encryption using KMS (SSE-KMS), the client typically sends a normal S3 request. S3 calls KMS on the object's behalf; the pod does **not** normally make a separate KMS API call to download the object. For an encrypted object, permissions to read the object and use the KMS key must both be valid. The S3 gateway endpoint carries the S3 request, not arbitrary direct KMS API traffic. A direct application KMS call from a fully private subnet may need NAT or a separate KMS **interface** endpoint.
+
+### Four different things people call "keys"
+
+| Term | Purpose | Safe usage |
+| --- | --- | --- |
+| S3 object key | Object name/path such as \`raw/customer.csv\` | Not a secret |
+| IAM access key ID + secret access key | Long-lived programmatic AWS credentials | Avoid in EKS; prefer IAM roles with temporary credentials |
+| KMS key | Cryptographic key managed by AWS KMS, used to protect data keys | Grant least-privilege key permissions; rotate according to policy |
+| TLS encryption key/certificate | Secures HTTPS traffic in transit | Use TLS and validate certificates; separate from S3 at-rest encryption |
+
+### S3 encryption choices
+
+- **SSE-S3:** S3-managed server-side encryption, with no customer KMS key policy to maintain.
+- **SSE-KMS:** S3 uses a KMS key. Offers centralized key policies, auditing and control, but can require KMS permissions and generate KMS request charges.
+- **Client-side encryption:** the application encrypts data before uploading; the application also manages the corresponding decryption workflow.
+
+S3 automatically encrypts new object uploads at rest by default using SSE-S3 unless another encryption option is selected. For SSE-KMS, check both the **IAM policy** and the **KMS key policy**; cross-account access can require explicit authorization on both sides. A missing \`kms:Decrypt\` authorization can produce S3 \`AccessDenied\` even when \`s3:GetObject\` is allowed.
+
+### How the controls fit together
+
+| Control | Question answered | Example |
+| --- | --- | --- |
+| IAM role | *Who may call S3/KMS?* | Pod role permits \`s3:GetObject\` and applicable \`kms:Decrypt\` |
+| S3 bucket policy | *Which resource requests are allowed or denied?* | Require \`aws:SourceVpce\` for approved application paths, with tested exceptions |
+| S3 gateway endpoint + route table | *How does a private VPC workload reach S3?* | S3 prefix-list route to \`vpce-...\` |
+| Security group | *Which TCP flows may leave/enter an ENI?* | HTTPS egress to S3 prefix list; inbound 443 to an interface endpoint ENI |
+| Public IP allowlist | *Which public egress IPs may access an exposed endpoint?* | Corporate proxy's public NAT IP for a public service |
+| KMS key policy/grants | *May the encryption key be used?* | Authorize the relevant principal for decrypt/encrypt operations |
+
+**Gateway versus interface endpoint:** an S3 **gateway endpoint** has no endpoint ENI or security group; routing and endpoint policy govern it. An S3 **interface endpoint** uses PrivateLink and has private ENI addresses with attached security groups. Do not confuse a security group with an IP allowlist in an S3 bucket policy.
+
+### Beginner-friendly verification path
+
+1. Create a sandbox S3 bucket with Block Public Access on; upload a small test file.
+2. Assign an EC2 instance or EKS workload an IAM role with only the required S3 permissions; avoid static access keys.
+3. Put the workload in a private subnet, associate an S3 gateway endpoint with its route table, and verify the S3 prefix-list route.
+4. Read the object over HTTPS. Confirm network path and IAM independently.
+5. Change the bucket's default encryption to SSE-KMS with an appropriate test key and upload a **new** test object. Check that reads succeed with correct KMS authorization and fail predictably when authorization is absent.
+6. Only after successful access, experiment with a restrictive \`aws:SourceVpce\` bucket policy in the sandbox; include recovery access and do not accidentally lock out console or AWS service integrations.
+7. Compare direct S3 calls with a corporate proxy route and document which source IP or endpoint context the destination actually sees.
+
+**Common failure split:** timeout usually suggests routing, DNS, firewall or proxy reachability; HTTP 403 suggests authorization or a policy denial; KMS-specific errors suggest key permissions, key state or encryption configuration. Always inspect the precise error and request path rather than guessing.
+
+Official references: [S3 default encryption](https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucket-encryption.html), [SSE-KMS](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingKMSEncryption.html), [S3 gateway endpoints](https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-s3.html), [S3 interface endpoints](https://docs.aws.amazon.com/AmazonS3/latest/userguide/privatelink-interface-endpoints.html), [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html).
