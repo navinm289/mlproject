@@ -619,3 +619,75 @@ S3 automatically encrypts new object uploads at rest by default using SSE-S3 unl
 **Common failure split:** timeout usually suggests routing, DNS, firewall or proxy reachability; HTTP 403 suggests authorization or a policy denial; KMS-specific errors suggest key permissions, key state or encryption configuration. Always inspect the precise error and request path rather than guessing.
 
 Official references: [S3 default encryption](https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucket-encryption.html), [SSE-KMS](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingKMSEncryption.html), [S3 gateway endpoints](https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-s3.html), [S3 interface endpoints](https://docs.aws.amazon.com/AmazonS3/latest/userguide/privatelink-interface-endpoints.html), [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html).
+
+
+## 17. AWS IAM delegation, Databricks Unity Catalog external locations, and managed file events (2026-11-05 to 2026-11-06)
+
+### Scenario from the learning discussion
+
+A Databricks Unity Catalog external location named `test` points to `s3://new-test-dbx-wksp/test`. A storage credential backed by an AWS IAM role is used to access the bucket. During troubleshooting, a role tag referring to a different bucket/location was noticed, and an attempt to change the external location's storage credential failed because the location had a **dependent managed file event queue**.
+
+**Important diagnostic distinction:** an IAM role's descriptive tag is not, by itself, the S3 access control. Inspect the role's actual IAM permission policies, trust policy, any permissions boundary, relevant S3 bucket policy, KMS key policy, and Databricks storage credential configuration. A mismatched tag may indicate a provisioning mistake, but it does not independently prove why S3 returned `AccessDenied`.
+
+### Who trusts whom?
+
+```mermaid
+flowchart LR
+    UC["Databricks Unity Catalog\nStorage Credential"]
+    STS["AWS STS\nAssumeRole"]
+    ROLE["AWS IAM Role\nTrust + permission policies"]
+    S3[("S3 bucket\nnew-test-dbx-wksp/test")]
+    EVENTS["Managed file events\nqueue / notification resources"]
+    UC -->|"Authorized role assumption"| STS
+    STS --> ROLE
+    ROLE -->|"S3 object and bucket actions"| S3
+    ROLE -.->|"Event setup and consumption permissions as required"| EVENTS
+    S3 -.->|"Object creation notifications"| EVENTS
+```
+
+- **Trust policy:** determines which authorized principal can assume the role, usually with conditions required by the Databricks storage credential integration. An external ID, when used, protects cross-account role assumption against confused-deputy attacks.
+- **Permissions policy:** defines which S3 object and bucket actions the assumed role can perform. Object access and bucket-level operations may need separate ARN resource scopes.
+- **Bucket policy:** can further permit or explicitly deny requests, including requests restricted to particular principals, network paths, or conditions.
+- **KMS policy:** matters when objects use SSE-KMS. Having `s3:GetObject` does not necessarily grant `kms:Decrypt`.
+- **Unity Catalog grants:** govern which Databricks principals can use storage credentials, external locations, and tables. They do not replace AWS IAM permissions.
+
+### Why changing the storage credential failed
+
+The reported Databricks error said the external location had a **dependent managed file event queue**, and instructed the operator to ensure the new credential could manage that queue and use a force option, or disable file events, update the credential, then re-enable file events to establish a new queue.
+
+This is not just a simple S3 object-read issue. File-event support may involve S3 notification configuration, SQS queue permissions, and lifecycle operations on cloud resources. Replacing the credential without handling those dependencies can break event-driven ingestion.
+
+**Safe change procedure (non-production first):**
+
+1. Record the existing external location URL, current credential, role ARN, IAM and trust policies, KMS settings, file-event status, queue configuration, and Databricks grants. Preserve the original role and permissions for rollback.
+2. Validate the proposed new IAM role's trust relationship and least-privilege S3 access against the exact target bucket and prefix. Check required file-event management permissions separately; do not assume object read/write is sufficient.
+3. Check the external location's dependent file-event resources. Choose between a supported credential migration that preserves the existing queue and a controlled disable/re-enable sequence that creates or reconfigures event resources.
+4. Apply the credential change only with approved permissions and a rollback plan. Do not use a force option merely to suppress the dependency warning.
+5. Validate both **data access** and **file-event delivery** after the change. Upload a unique test object, confirm the expected event/queue behavior, and verify the downstream ingestion trigger.
+6. Confirm no other tables, jobs, or locations rely on the original credential before retiring anything. Retain audit evidence of the change.
+
+### External location vs Iceberg table vs file event trigger
+
+These are three distinct layers:
+
+| Layer | Purpose | What it does not guarantee |
+| --- | --- | --- |
+| UC external location | Governs an approved S3 path and the storage credential used for access | Does not automatically create a table or make a directory an Iceberg table |
+| Iceberg table | Adds a table schema, metadata, snapshots, and supported read/write semantics | Does not itself configure S3 object-created notifications |
+| Managed file events / SQS | Detects new object arrivals and supports event-driven ingestion | Does not grant table privileges or replace S3/KMS authorization |
+
+Whether an Iceberg table can be created at the external location depends on the selected Databricks table type, supported catalog features, required UC privileges, and the location's storage configuration. Do not infer table support from a successful external-location connection test alone.
+
+### Troubleshooting matrix
+
+| Symptom | Investigate first |
+| --- | --- |
+| S3 `AccessDenied` | Effective IAM role permissions, bucket policy, KMS, trust/role assumption, requested key/prefix |
+| Role tag differs from target bucket | Provisioning intent versus actual trust/permission policies; tag alone is not proof |
+| Credential update blocked by managed queue | File-event dependencies and queue-management permissions; controlled migration strategy |
+| Files readable but trigger does not fire | Event notification filters, queue policy, file-event enablement, permissions and delivery |
+| Trigger fires but Iceberg ingestion fails | Table type, UC privileges, table metadata and job logic |
+
+**Security rule:** do not widen an existing production IAM role to solve a test-bucket issue without approval. Prefer a separately scoped role/credential when isolation is required, and preserve the original role until migration is verified.
+
+References: [Databricks AWS storage credentials](https://docs.databricks.com/aws/en/connect/unity-catalog/cloud-storage/storage-credentials), [Databricks external locations](https://docs.databricks.com/aws/en/connect/unity-catalog/cloud-storage/external-locations), [AWS IAM roles and trust policies](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles.html), [S3 event notifications](https://docs.aws.amazon.com/AmazonS3/latest/userguide/EventNotifications.html).
