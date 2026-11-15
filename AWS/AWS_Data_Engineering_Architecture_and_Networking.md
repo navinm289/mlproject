@@ -691,3 +691,13 @@ Whether an Iceberg table can be created at the external location depends on the 
 **Security rule:** do not widen an existing production IAM role to solve a test-bucket issue without approval. Prefer a separately scoped role/credential when isolation is required, and preserve the original role until migration is verified.
 
 References: [Databricks AWS storage credentials](https://docs.databricks.com/aws/en/connect/unity-catalog/cloud-storage/storage-credentials), [Databricks external locations](https://docs.databricks.com/aws/en/connect/unity-catalog/cloud-storage/external-locations), [AWS IAM roles and trust policies](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles.html), [S3 event notifications](https://docs.aws.amazon.com/AmazonS3/latest/userguide/EventNotifications.html).
+
+
+## Hybrid connectivity case study: five on-prem edge nodes → S3 via PrivateLink
+
+On 2026-11-15, reviewed the corporate **source-IP template**, **destination endpoint-IP template**, firewall request on **TCP 443**, private Direct Connect/VPN path, S3 **interface** VPC endpoint ENIs, endpoint **security group**, and independent S3 IAM/bucket/endpoint authorization. All IP examples are illustrative.
+
+- [Open full architecture diagram](./OnPrem_Edge_to_S3_PrivateLink.svg)
+- [Read the editable Mermaid diagram and detailed walkthrough](./OnPrem_Edge_to_S3_PrivateLink.md)
+
+**Distinguish** corporate firewall logical templates (IP group objects) from AWS security groups (ENI-level network controls). On-prem cannot access S3 through a VPC-only **gateway** endpoint. Verify the effective source IP after NAT, DNS configuration, ENI private IP changes, and routing.
