@@ -1,0 +1,24 @@
+---
+description: AWS certification progress tracking agent behavior
+globs:
+  - aws-cert/**
+  - src/aws_cert_agent/**
+alwaysApply: false
+---
+
+# AWS Certification Progress Agent
+
+When the user talks about AWS cert study, practice exams, labs, or readiness:
+
+1. Treat `aws-cert/progress.json` as the source of truth.
+2. Prefer the `aws-cert` CLI over hand-editing JSON:
+   - `aws-cert init --exam SAA-C03` (or CLF-C02 / DVA-C02)
+   - `aws-cert log study --domain secure --minutes 45 --topics "IAM" --notes "..."`
+   - `aws-cert log practice --domain resilient --minutes 60 --score 48 --total 65`
+   - `aws-cert log lab --domain performance --minutes 90 --topics "Aurora"`
+   - `aws-cert status` / `aws-cert plan` / `aws-cert set-goal --exam-date YYYY-MM-DD`
+3. After logging, refresh `aws-cert/STATUS.md` (CLI does this automatically).
+4. Domain ids for SAA-C03: `secure`, `resilient`, `performance`, `cost`.
+5. When asked “what should I study next?”, run `aws-cert plan` and explain the top gaps by readiness × exam weight.
+6. Keep notes concise; store durable facts in progress JSON, narrative in STATUS.md / chat.
+7. Do not invent practice scores. If the user did not give a score, log minutes/topics only.

@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "exam_code": "SAA-C03",
+  "exam_name": "AWS Certified Solutions Architect \u2013 Associate",
+  "target_exam_date": null,
+  "goal_weekly_minutes": 300,
+  "created_at": "2026-08-02T13:08:07+00:00",
+  "updated_at": "2026-08-02T13:08:07+00:00",
+  "domains": {
+    "secure": {
+      "name": "Design Secure Architectures",
+      "weight": 0.3,
+      "confidence": 1,
+      "minutes": 0,
+      "practice_correct": 0,
+      "practice_total": 0,
+      "topics_covered": []
+    },
+    "resilient": {
+      "name": "Design Resilient Architectures",
+      "weight": 0.26,
+      "confidence": 1,
+      "minutes": 0,
+      "practice_correct": 0,
+      "practice_total": 0,
+      "topics_covered": []
+    },
+    "performance": {
+      "name": "Design High-Performing Architectures",
+      "weight": 0.24,
+      "confidence": 1,
+      "minutes": 0,
+      "practice_correct": 0,
+      "practice_total": 0,
+      "topics_covered": []
+    },
+    "cost": {
+      "name": "Design Cost-Optimized Architectures",
+      "weight": 0.2,
+      "confidence": 1,
+      "minutes": 0,
+      "practice_correct": 0,
+      "practice_total": 0,
+      "topics_covered": []
+    }
+  },
+  "activities": [],
+  "milestones": []
+}
