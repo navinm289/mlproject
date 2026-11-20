@@ -701,3 +701,49 @@ On 2026-11-15, reviewed the corporate **source-IP template**, **destination endp
 - [Read the editable Mermaid diagram and detailed walkthrough](./OnPrem_Edge_to_S3_PrivateLink.md)
 
 **Distinguish** corporate firewall logical templates (IP group objects) from AWS security groups (ENI-level network controls). On-prem cannot access S3 through a VPC-only **gateway** endpoint. Verify the effective source IP after NAT, DNS configuration, ENI private IP changes, and routing.
+
+
+## Spark on Amazon EKS: secure column encryption and Snowflake round-trip (2026-11-18 to 2026-11-19)
+
+### Workload and trust boundaries
+
+A proposed benchmark processes approximately **700 million rows with eight columns**, encrypts **seven mixed-type columns** in Spark on Amazon EKS, writes ciphertext to Snowflake, then reads and decrypts it in Spark on EKS. Snowflake is a **storage/processing destination**, not the holder of the application decryption key and not the authentication mechanism for the encryption keys. The design remains a proposal until the round-trip tests pass.
+
+```mermaid
+flowchart LR
+    SOURCE["Source data / Spark input"]
+    POD["Spark driver + executors on EKS"]
+    ID["EKS Pod Identity or IRSA\nIAM role"]
+    KMS["AWS KMS / approved key service"]
+    SF[("Snowflake table\nCiphertext + encryption metadata")]
+    CHECK["Spark decrypt + row-level verification"]
+    SOURCE --> POD
+    POD -->|"Encrypt seven columns"| SF
+    SF -->|"Read encrypted columns"| CHECK
+    ID -->|"Authorized key-service calls"| KMS
+    POD -.->|"Obtain or unwrap protected data key"| KMS
+    CHECK -.->|"Authorized key operations"| KMS
+```
+
+**Separate the layers:** IAM/Pod Identity authenticates the EKS workload to AWS services; KMS protects keys and enforces key-use permissions; application-layer AES-GCM encrypts the actual field values; RSA public/private keys, when required, wrap and unwrap small symmetric keys. S3 SSE-KMS and Snowflake's own at-rest encryption protect storage independently and do **not** replace application-layer encryption.
+
+### Recommended envelope-encryption design
+
+1. Agree on a versioned ciphertext contract across source and consumer: algorithm, key ID/version, wrapped data key, nonce/IV, authentication tag, encoding, and original data type/null representation.
+2. Generate a fresh AES-256 data key at an approved granularity (for example, per batch); encrypt values with AES-256-GCM using a **unique nonce per encryption under that key**. Do not reuse a nonce after Spark retries or speculative execution. Define how row/column identity is bound via authenticated associated data.
+3. If the source must encrypt with a public key, use RSA-OAEP with SHA-256 to **wrap the AES key**, not to encrypt every full row or column directly. Protect the private key in an approved key-management system. AWS KMS asymmetric RSA decrypt operations can unwrap compatible RSA-OAEP ciphertext, subject to key specifications, API limits, permissions, and cross-system interoperability tests. KMS cannot directly decrypt an AES-GCM payload.
+4. Store only ciphertext and required **nonsecret** decryption metadata in Snowflake. Never log plaintext values, private keys, or raw unwrapped AES keys. Plan for key rotation, error handling, audit trails, and least-privilege access.
+5. First prove a 10,000-row encrypt → Snowflake write → read → decrypt round trip with exact type/null fidelity and zero mismatches; then benchmark 1M, 10M, 100M, and finally 700M rows. Verify authenticated decryption rejects tampering.
+
+### EKS sizing and networking checklist
+
+An **initial benchmark configuration, not a production recommendation**, is a Spark driver with 4 vCPU / 16 GiB, **16 executors × 4 vCPU / 16 GiB**, and roughly **256 partitions**. Adjust after observing row widths, ciphertext expansion, serialization, CPU, memory, network throughput, Snowflake connector behavior, and shuffle/retry costs. Benchmark encryption CPU, Snowflake I/O, and decryption independently before scaling.
+
+- Use **EKS Pod Identity or IRSA** to bind the Spark service account to a narrowly scoped IAM role for any AWS KMS or S3 calls. Avoid static AWS keys in pod environment variables.
+- Verify VPC DNS, subnet routes, security groups, network policies, corporate proxy rules where applicable, and outbound TLS access to Snowflake and KMS. If using a **KMS interface VPC endpoint**, configure private DNS, endpoint security groups, and endpoint/IAM/key policies; a private endpoint alone does not authorize cryptographic operations.
+- Use S3 gateway/interface endpoints only for actual S3 traffic (for example staging or checkpoints); an S3 endpoint does **not** provide connectivity to Snowflake or KMS.
+- Test executor retries, speculative execution, key-service throttling, task concurrency, secret exposure in Spark logs, and Snowflake connector compatibility before extrapolating to hundreds of millions of rows.
+
+**Design warning:** a label such as “AES 2048 strength” conflates algorithm and key sizes. AES-256 uses a 256-bit symmetric key; RSA-2048 is an asymmetric key size. Confirm the actual key format, allowed RSA padding/hash, and ciphertext contract before coding.
+
+References: [AWS KMS asymmetric encryption](https://docs.aws.amazon.com/kms/latest/developerguide/symmetric-asymmetric.html), [AWS KMS Decrypt API](https://docs.aws.amazon.com/kms/latest/APIReference/API_Decrypt.html), [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html), [VPC interface endpoints for KMS](https://docs.aws.amazon.com/kms/latest/developerguide/kms-vpc-endpoint.html).
